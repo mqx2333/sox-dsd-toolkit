@@ -67,10 +67,13 @@ def main() -> int:
         check("%s recommended target" % label, d.recommended_target, expect)
         plans[label] = core.build_plan(sox, path, os.path.join(AUDIT, "st_%s.wav" % label), d)
 
-    dffs = [f for f in os.listdir(r"C:\Users\Administrator\Desktop\Project\MusicTota")
-            if f.lower().endswith(".dff")] if os.path.isdir(r"C:\Users\Administrator\Desktop\Project\MusicTota") else []
+    # Optional DFF probe directory; set DSD_SELFTEST_DFF_DIR to your own material,
+    # otherwise this check is skipped.
+    dff_dir = os.environ.get("DSD_SELFTEST_DFF_DIR", "")
+    dffs = ([f for f in os.listdir(dff_dir) if f.lower().endswith(".dff")]
+            if dff_dir and os.path.isdir(dff_dir) else [])
     if dffs:
-        p = os.path.join(r"C:\Users\Administrator\Desktop\Project\MusicTota", dffs[0])
+        p = os.path.join(dff_dir, dffs[0])
         d = core.read_dsd_info(p)
         print("  DFF      %-30s rate=%s ch=%s ok=%s tier=%s"
               % (dffs[0][:30], d.rate, d.channels, d.ok, d.tier))
@@ -151,8 +154,9 @@ def main() -> int:
     section("DST routing (sox_ng cannot read DST-compressed DFF; ffmpeg can)")
     ff = core.find_ffmpeg()
     print("  ffmpeg:", ff)
-    dst_dir = r"C:\Users\Administrator\Desktop\Project\MusicTota"
-    dst_files = [f for f in os.listdir(dst_dir) if f.lower().endswith(".dff")] if os.path.isdir(dst_dir) else []
+    dst_dir = os.environ.get("DSD_SELFTEST_DFF_DIR", "")
+    dst_files = ([f for f in os.listdir(dst_dir) if f.lower().endswith(".dff")]
+                 if dst_dir and os.path.isdir(dst_dir) else [])
     if dst_files:
         p = os.path.join(dst_dir, dst_files[0])
         d = core.read_dsd_info(p)

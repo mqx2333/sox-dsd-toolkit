@@ -14,8 +14,11 @@ import tempfile
 
 import core
 
-MUSIC = r"C:\Users\Administrator\Desktop\Project\MusicTota\赵雷 - 船长.flac"
-OUT = r"C:\Users\Administrator\Desktop\Project\MusicTota\赵雷 - 船长_DSD.dsf"
+# Archived probe paths.  This legacy program used a real music file; point these at
+# your own material, or just leave them unset -- the checks that use them are skipped
+# when the files are absent.
+MUSIC = os.environ.get("DSD_SELFTEST_FLAC", "")
+OUT = os.environ.get("DSD_SELFTEST_DSF", "")
 
 failures = []
 

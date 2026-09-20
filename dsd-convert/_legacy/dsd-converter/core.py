@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Sequence
 # --------------------------------------------------------------------------
 
 DEFAULT_SOX_CANDIDATES = (
-    r"C:\Users\Administrator\AppData\Local\Programs\sox_ng\sox_ng.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\sox_ng\sox_ng.exe"),
     r"C:\Program Files\sox_ng\sox_ng.exe",
     r"C:\Program Files (x86)\sox_ng\sox_ng.exe",
 )
