@@ -1,0 +1,38 @@
+# Normalise line endings in the repository; work with native endings in the checkout.
+#
+# Without this, git prints "LF will be replaced by CRLF" on every commit of a text
+# file and the working tree drifts from the index.
+* text=auto eol=lf
+
+# Windows-specific files keep CRLF so they behave in cmd.exe / PowerShell
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Text files that should never be touched
+*.py    text
+*.md    text
+*.json  text
+*.yml   text
+*.yaml  text
+*.txt   text
+.gitignore    text
+.gitattributes text
+
+# Binary files must never be converted
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.exe   binary
+*.dll   binary
+*.zip   binary
+
+# Audio: never commit these, and never let git touch them if someone does stage one
+*.dsf   binary
+*.dff   binary
+*.wsd   binary
+*.wav   binary
+*.flac  binary
+
+# Diffs
+*.py    diff=python

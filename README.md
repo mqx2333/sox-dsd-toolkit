@@ -2,6 +2,11 @@
 
 **A measurement-driven PCM ↔ DSD conversion toolkit built on [sox_ng](https://codeberg.org/sox_ng/sox_ng).**
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](#limitations)
+[![sox_ng 14.6+](https://img.shields.io/badge/sox__ng-14.6%2B-informational.svg)](https://codeberg.org/sox_ng/sox_ng)
+
 Most DSD conversion advice online is folklore: copy a command line someone posted, and
 hope. This project takes the opposite approach. Every default it applies — the gain, the
 target sample rate, the noise-shaping filter, which decoder to use — comes from a
