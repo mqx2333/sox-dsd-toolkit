@@ -1,0 +1,39 @@
+# --- test fixtures / scratch data (215 MB; regenerate with the tools themselves) ---
+_eq/
+_selftest/
+work/
+bin/
+
+# --- runtime artifacts ---
+_progress.json
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- editors / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- never commit generated audio ---
+*.dsf
+*.dff
+*.wsd
+
+# --- never commit secrets ---
+.env
+*.token
+gha-creds-*.json
