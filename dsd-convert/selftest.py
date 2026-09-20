@@ -1,24 +1,26 @@
 """
-selftest.py -- smoke test for the merged PCM <-> DSD command builder.
+selftest.py -- smoke test for the PCM <-> DSD command builder.
 
 Run:  python selftest.py
-Checks both directions against the real toolchain, and executes one conversion in
-each direction to prove the commands work.
+
+Self-contained: any probe it needs is synthesised with sox_ng into a local `_selftest`
+folder, so the test runs on a fresh clone with nothing but the tools installed.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
 import core
 
-W = r"C:\Harness\sox-dsd\_eq"
-T = r"C:\Harness\sox-audit"
-MUSIC = r"C:\Users\Administrator\Desktop\Project\MusicTota"
+HERE = os.path.dirname(os.path.abspath(__file__))
+WORK = os.path.join(HERE, "_selftest")
 
 failures = []
+skipped = []
 
 
 def check(label, got, want):
@@ -32,10 +34,37 @@ def section(t):
     print("\n=== %s ===" % t)
 
 
-def run_peak(exe, path):
-    r = core._run(exe, [path, "-n", "stats"])
-    vals = core.parse_stats((r.stdout or "") + (r.stderr or ""))
-    return vals.get("peak")
+def make_probes(sox):
+    """Synthesise everything the test needs.  Returns a dict of paths."""
+    os.makedirs(WORK, exist_ok=True)
+    p = {}
+
+    # a -3 dBFS tone so the computed gain is non-zero
+    p["pcm_tone"] = os.path.join(WORK, "probe_minus3.wav")
+    core._run(sox, ["-n", "-r", "44100", "-c", "2", "-b", "24", p["pcm_tone"],
+                    "synth", "1", "sin", "997", "gain", "-3"])
+
+    # silence and a tone encoded to the three DSD tiers, for header + decode tests
+    for label, rate, filt in (("DSD64", 2822400, "clans-8"),
+                              ("DSD128", 5644800, "clans-7"),
+                              ("DSD256", 11289600, "clans-6")):
+        sil = os.path.join(WORK, "sil_%s.wav" % label)
+        core._run(sox, ["-n", "-r", "44100", "-c", "2", "-b", "24", sil, "trim", "0", "0.5"])
+        dsf = os.path.join(WORK, "sil_%s.dsf" % label)
+        core._run(sox, [sil, dsf, "rate", "-u", str(rate), "sdm", "-f", filt, "-t", "8", "-n", "8"])
+        p["sil_%s" % label] = dsf
+
+    # an uncompressed DFF, to exercise the DFF reader and the sox_ng route
+    dff = os.path.join(WORK, "probe.dff")
+    core._run(sox, [p["pcm_tone"], dff, "rate", "-u", "2822400",
+                    "sdm", "-f", "clans-8", "-t", "8", "-n", "8"])
+    p["dff"] = dff
+    return p
+
+
+def run_peak(sox, path):
+    r = core._run(sox, [path, "-n", "stats"])
+    return core.parse_stats((r.stdout or "") + (r.stderr or "")).get("peak")
 
 
 def main() -> int:
@@ -45,134 +74,179 @@ def main() -> int:
     print("  sox_ng:", sox)
     print("  ffmpeg:", ff)
     if not sox:
-        failures.append("sox_ng not found")
+        print("\nFAILED: no sox found. Install sox_ng (>= 14.6.0, DSD support).")
         return 1
     probe = core.probe_sox(sox)
-    print("  version:", probe["version"], " reads DSD:", probe["reads_dsd"], " sdm:", probe["has_sdm"])
+    print("  version  :", probe["version"])
+    print("  reads DSD:", probe["reads_dsd"])
+    print("  has sdm  :", probe["has_sdm"])
     if not probe["reads_dsd"]:
-        failures.append("sox cannot read DSD")
+        failures.append("this sox cannot read DSD (stock SoX 14.4.2 cannot; use sox_ng)")
     if not probe["has_sdm"]:
-        failures.append("sox has no sdm effect")
+        failures.append("this sox has no sdm effect (use sox_ng)")
 
     section("direction detection")
     check("dsf -> to-pcm", core.detect_direction("a.dsf"), "to-pcm")
     check("dff -> to-pcm", core.detect_direction("a.dff"), "to-pcm")
+    check("wsd -> to-pcm", core.detect_direction("a.wsd"), "to-pcm")
     check("flac -> to-dsd", core.detect_direction("a.flac"), "to-dsd")
     check("wav -> to-dsd", core.detect_direction("a.wav"), "to-dsd")
+    check("aiff -> to-dsd", core.detect_direction("a.aiff"), "to-dsd")
     check("txt -> None", core.detect_direction("a.txt"), None)
 
-    section("gain maths")
+    section("gain arithmetic")
     check("0 dBFS -> 0 dBDSD", core.compute_gain(0.0), -6.0)
     check("-3 dBFS", core.compute_gain(-3.0), -3.0)
     check("-12 dBFS quiet master", core.compute_gain(-12.0), 6.0)
     check("safety margin", core.compute_gain(0.0, safety_margin_db=1.0), -7.0)
-    check("SACD ceiling target", core.compute_gain(0.0, target_peak_dbfs=-2.9), -2.9)
+    check("SACD ceiling +3.1 dBDSD", core.compute_gain(0.0, target_peak_dbfs=-2.9), -2.9)
+    check("silence is left alone", core.compute_gain(None), 0.0)
 
-    section("family / ratio")
-    check("44100 family", core.classify_family(44100), "44.1k")
-    check("48000 family", core.classify_family(48000), "48k")
+    section("sample-rate family and ratio")
+    check("44100 -> 44.1k", core.classify_family(44100), "44.1k")
+    check("88200 -> 44.1k", core.classify_family(88200), "44.1k")
+    check("48000 -> 48k", core.classify_family(48000), "48k")
+    check("96000 -> 48k", core.classify_family(96000), "48k")
     check("44100 divides 5644800", core.is_integer_ratio(44100, 5644800), True)
-    check("48000 not divide 5644800", core.is_integer_ratio(48000, 5644800), False)
+    check("48000 does not divide 5644800", core.is_integer_ratio(48000, 5644800), False)
+    check("48000 divides 6144000", core.is_integer_ratio(48000, 6144000), True)
+    check("integer ratio helper targets", core.target_rate_choices(None, "to-pcm")[:2],
+          ["44100", "88200"])
 
-    section("DSD header parsing")
-    for name, expect_rate, expect_target in (("sil_DSD64.dsf", 2822400, 88200),
-                                            ("sil_DSD128.dsf", 5644800, 176400),
-                                            ("sil_DSD256.dsf", 11289600, 352800)):
-        p = os.path.join(W, name)
-        if not os.path.exists(p):
-            print("  (%s missing, skipped)" % name)
-            continue
-        d = core.read_dsd_info(p)
-        print("  %-14s container=%s rate=%s ch=%s bits=%s dst=%s"
-              % (name, d.container, d.rate, d.channels, d.bits_per_sample, d.is_dst))
-        check("%s rate" % name, d.rate, expect_rate)
-        check("%s target" % name, d.recommended_target, expect_target)
+    if failures:
+        print("\nAborting before the tool-dependent tests: %s" % failures)
+        return 1
 
-    if os.path.isdir(MUSIC):
-        dffs = [f for f in os.listdir(MUSIC) if f.lower().endswith(".dff")]
-        if dffs:
-            d = core.read_dsd_info(os.path.join(MUSIC, dffs[0]))
-            print("  real DFF: %-28s rate=%s compression=%r is_dst=%s"
-                  % (dffs[0][:28], d.rate, d.compression, d.is_dst))
-            check("DST detected", d.is_dst, True)
+    section("probe generation (synthesised locally, nothing is downloaded)")
+    probes = make_probes(sox)
+    for label, path in sorted(probes.items()):
+        ok = os.path.exists(path) and os.path.getsize(path) > 0
+        print("  %-12s %s  %s" % (label, "OK" if ok else "MISSING",
+                                  os.path.basename(path)))
+        if not ok:
+            failures.append("probe %s not created" % label)
+    if failures:
+        print("\nAborting: could not synthesise probes.")
+        return 1
+
+    section("DSD header parsing (pure python, no ffprobe)")
+    tiers = (("DSD64", 2822400, 88200), ("DSD128", 5644800, 176400),
+             ("DSD256", 11289600, 352800))
+    for label, rate, target in tiers:
+        d = core.read_dsd_info(probes["sil_%s" % label])
+        print("  %-8s container=%s rate=%s ch=%s bits=%s dst=%s target=%s"
+              % (label, d.container, d.rate, d.channels, d.bits_per_sample,
+                 d.is_dst, d.recommended_target))
+        check("%s rate" % label, d.rate, rate)
+        check("%s recommended target" % label, d.recommended_target, target)
+
+    d = core.read_dsd_info(probes["dff"])
+    print("  %-8s container=%s rate=%s ch=%s dst=%s" % ("DFF", d.container, d.rate,
+                                                        d.channels, d.is_dst))
+    check("DFF parses", d.ok, True)
+    check("DFF container", d.container, "dff")
+    check("DFF is not DST", d.is_dst, False)
+    check("garbage is rejected", core.read_dsd_info(probes["pcm_tone"]).ok, False)
 
     section("PCM -> DSD command")
-    # a dedicated probe at -3 dBFS so the computed gain is non-zero (gain is omitted
-    # from the command when it rounds to 0.0)
-    pcm = os.path.join(T, "st_probe_minus3.wav")
-    core._run(sox, ["-n", "-r", "44100", "-c", "2", "-b", "24", pcm,
-                    "synth", "1", "sin", "997", "gain", "-3"])
-    hdr = core.read_pcm_header(pcm, sox)
-    sig = core.measure(pcm, sox)
+    hdr = core.read_pcm_header(probes["pcm_tone"], sox)
+    sig = core.measure(probes["pcm_tone"], sox)
     print("  source: %d Hz, peak %.2f dBFS" % (hdr.get("rate") or 0, sig.peak_db))
-    plan = core.plan_to_dsd(sox, pcm, os.path.join(T, "st_to_dsd.dsf"),
+    plan = core.plan_to_dsd(sox, probes["pcm_tone"],
+                            os.path.join(WORK, "out.dsf"),
                             hdr.get("rate"), sig.peak_db, dsd_rate=2822400)
-    print("    " + core.build_command(plan))
-    check("gain computed", plan.gain_db, core.compute_gain(sig.peak_db))
-    check("gain is non-zero for a -3 dBFS source", abs(plan.gain_db) > 0.05, True)
     cmd = core.build_command(plan)
-    check("has -f filter", " -f " in cmd, True)
-    check("has sdm", " sdm " in cmd, True)
-    check("gain before rate", cmd.index("gain") < cmd.index("rate"), True)
-    check("rate before sdm", cmd.index("rate") < cmd.index("sdm"), True)
-    check("filter always named", bool(plan.filter_name), True)
-    # and a 0 dBFS source must produce the -6 dB reference gain
-    check("0 dBFS -> -6 dB", core.compute_gain(0.0), -6.0)
+    print("    " + cmd)
+    check("gain computed from the measurement", plan.gain_db, core.compute_gain(sig.peak_db))
+    check("gain is non-zero for a -3 dBFS source", abs(plan.gain_db) > 0.05, True)
+    check("filter is always named", bool(plan.filter_name), True)
+    check("command has -f", " -f " in cmd, True)
+    check("command has sdm", " sdm " in cmd, True)
+    check("gain comes before rate", cmd.index("gain") < cmd.index("rate"), True)
+    check("rate comes before sdm", cmd.index("rate") < cmd.index("sdm"), True)
+    check("trellis parameters present", all(x in cmd for x in ("-t", "-n", "-l")), True)
+    check("dsf container by extension", "-t dsf" in cmd, True)
 
     section("DSD -> PCM command")
-    dsf = os.path.join(W, "sil_DSD64.dsf")
-    if os.path.exists(dsf):
-        d = core.read_dsd_info(dsf)
-        p1 = core.plan_to_pcm(sox, ff, dsf, os.path.join(T, "st_to_pcm.wav"), d)
-        print("    " + core.build_command(p1))
-        check("routed to sox", p1.tool, "sox")
-        check("output rate present", "rate -v %d" % p1.pcm_rate in core.build_command(p1), True)
-        check("24-bit default", p1.bits, 24)
-        p16 = core.plan_to_pcm(sox, ff, dsf, p1.output_path, d, bits=16)
-        check("16-bit warns", any("16-bit" in w for w in p16.warnings), True)
-    if os.path.isdir(MUSIC):
-        dffs = [f for f in os.listdir(MUSIC) if f.lower().endswith(".dff")]
-        if dffs:
-            p = os.path.join(MUSIC, dffs[0])
-            d = core.read_dsd_info(p)
-            p2 = core.plan_to_pcm(sox, ff, p, os.path.join(T, "st_dst.wav"), d)
-            print("    " + core.build_command(p2)[:130])
-            check("DST routed to ffmpeg", p2.tool, "ffmpeg")
-            check("ffmpeg uses -ar", "-ar " in core.build_command(p2), True)
+    dsf64 = probes["sil_DSD64"]
+    d = core.read_dsd_info(dsf64)
+    p1 = core.plan_to_pcm(sox, ff, dsf64, os.path.join(WORK, "out.wav"), d)
+    print("    " + core.build_command(p1))
+    check("routed to sox_ng", p1.tool, "sox")
+    check("output rate is present", "rate -v %d" % p1.pcm_rate in core.build_command(p1), True)
+    check("24-bit by default", p1.bits, 24)
+    check("16-bit warns", any("16-bit" in w for w in
+                              core.plan_to_pcm(sox, ff, dsf64, p1.output_path, d,
+                                               bits=16).warnings), True)
+    flac_plan = core.plan_to_pcm(sox, ff, dsf64, os.path.join(WORK, "out.flac"), d)
+    check("flac omits -e", "-e " not in core.build_command(flac_plan), True)
+    check("wav sets -e", "-e signed-integer" in core.build_command(p1), True)
 
-    section("quoting / argv")
-    check("plain", core._quote(r"C:\a\b.dsf"), r"C:\a\b.dsf")
-    check("spaces", core._quote(r"C:\a b\c.dsf"), '"C:\\a b\\c.dsf"')
-    if os.path.exists(dsf):
-        d = core.read_dsd_info(dsf)
-        p = core.plan_to_pcm(sox, ff, r"C:\a b\c.dsf", r"C:\d e\f.wav", d)
-        argv = core.build_argv(p)
-        check("argv strips quotes", '"C:\\a b\\c.dsf"' not in argv, True)
-        check("argv keeps raw path", r"C:\a b\c.dsf" in argv, True)
+    section("DST routing (sox_ng refuses DST; ffmpeg decodes it)")
+    # craft a DST-flagged DFF by patching the CMPR chunk of a plain one
+    dst_path = os.path.join(WORK, "fake_dst.dff")
+    raw = bytearray(open(probes["dff"], "rb").read(1 << 16))
+    i = raw.find(b"CMPR")
+    if i >= 0:
+        raw[i + 12:i + 16] = b"DST "
+        with open(dst_path, "wb") as fh:
+            fh.write(raw)
+    if i >= 0 and os.path.exists(dst_path):
+        dd = core.read_dsd_info(dst_path)
+        print("  patched CMPR -> compression=%r is_dst=%s" % (dd.compression, dd.is_dst))
+        check("DST detected from CMPR", dd.is_dst, True)
+        p2 = core.plan_to_pcm(sox, ff, dst_path, os.path.join(WORK, "dst.wav"), dd)
+        check("DST routed to ffmpeg", p2.tool, "ffmpeg")
+        check("ffmpeg command uses -ar", "-ar " in core.build_command(p2), True)
+        check("DST route warns about ignored effects",
+              any("ffmpeg" in w and "效果" in w or "effects" in w for w in
+                  core.plan_to_pcm(sox, ff, dst_path, p2.output_path, dd,
+                                   post_effects=["gain", "-1"]).warnings), True)
+    else:
+        skipped.append("DST routing (could not patch CMPR)")
+
+    section("quoting and argv")
+    check("plain path unquoted", core._quote(r"C:\a\b.dsf"), r"C:\a\b.dsf")
+    check("spaces quoted", core._quote(r"C:\a b\c.dsf"), '"C:\\a b\\c.dsf"')
+    p = core.plan_to_pcm(sox, ff, r"C:\a b\c.dsf", r"C:\d e\f.wav",
+                         core.read_dsd_info(dsf64))
+    argv = core.build_argv(p)
+    check("argv strips the quotes", r"C:\a b\c.dsf" in argv, True)
+    check("argv has no quoted literal", '"C:\\a b\\c.dsf"' not in argv, True)
 
     section("execute a real conversion in each direction")
-    if os.path.exists(pcm):
-        out = os.path.join(T, "st_run_to_dsd.dsf")
-        argv = core.build_argv(core.plan_to_dsd(sox, pcm, out, hdr.get("rate"),
-                                                sig.peak_db, dsd_rate=2822400))
-        p = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        ok = p.returncode == 0 and os.path.exists(out)
-        print("  PCM->DSD exit=%s exists=%s size=%s" % (p.returncode, os.path.exists(out),
-              os.path.getsize(out) if os.path.exists(out) else 0))
-        if not ok:
-            failures.append("PCM->DSD conversion failed: %s" % (p.stderr or "")[:120])
-    if os.path.exists(dsf):
-        d = core.read_dsd_info(dsf)
-        out2 = os.path.join(T, "st_run_to_pcm.wav")
-        argv = core.build_argv(core.plan_to_pcm(sox, ff, dsf, out2, d, pcm_rate=88200))
-        p = subprocess.run(argv, capture_output=True, text=True, errors="replace",
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        peak = run_peak(sox, out2) if os.path.exists(out2) else None
-        print("  DSD->PCM exit=%s decoded peak=%s dBFS" % (p.returncode, peak))
-        check("decode peak is sane (not 0.0 = raw-bit copy)", peak is not None and peak < -6.0, True)
+    out1 = os.path.join(WORK, "run_to_dsd.dsf")
+    argv = core.build_argv(core.plan_to_dsd(sox, probes["pcm_tone"], out1,
+                                            hdr.get("rate"), sig.peak_db,
+                                            dsd_rate=2822400))
+    pr = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    made = os.path.exists(out1) and os.path.getsize(out1) > 0
+    print("  PCM->DSD exit=%s created=%s size=%s" % (pr.returncode, made,
+          os.path.getsize(out1) if made else 0))
+    if pr.returncode != 0 or not made:
+        failures.append("PCM->DSD conversion failed: %s" % (pr.stderr or "")[:140])
+    else:
+        back = core.read_dsd_info(out1)
+        check("output is a readable DSF", back.ok, True)
 
-    print("\n" + ("ALL CHECKS PASSED" if not failures else "FAILURES: %s" % failures))
+    out2 = os.path.join(WORK, "run_to_pcm.wav")
+    argv = core.build_argv(core.plan_to_pcm(sox, ff, dsf64, out2,
+                                            core.read_dsd_info(dsf64), pcm_rate=88200))
+    pr = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    peak = run_peak(sox, out2) if os.path.exists(out2) else None
+    print("  DSD->PCM exit=%s decoded peak=%s dBFS" % (pr.returncode, peak))
+    # 0.0 dBFS here would mean the raw bitstream was copied instead of decoded
+    check("decode peak is sane (not 0.0 = raw-bit copy)",
+          peak is not None and peak < -6.0, True)
+
+    shutil.rmtree(WORK, ignore_errors=True)
+
+    print()
+    if skipped:
+        print("skipped: %s" % skipped)
+    print("ALL CHECKS PASSED" if not failures else "FAILURES: %s" % failures)
     return 1 if failures else 0
 
 

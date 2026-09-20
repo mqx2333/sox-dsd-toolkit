@@ -225,13 +225,15 @@ cd dsd-convert
 python selftest.py
 ```
 
-40 checks covering direction detection, gain arithmetic, sample-rate family and ratio
-handling, DSF/DFF/DST header parsing, command construction and argument order, container
-handling, decoder routing, and a real conversion executed in each direction.
+Self-contained: every probe it needs is synthesised locally with sox_ng into a
+`_selftest` folder, so it runs on a fresh clone with nothing but the tools installed
+(and removes that folder afterwards).
 
-Note: some fixture-dependent checks read probe files from a scratch directory that is not
-distributed with the repository, and those print `(missing, skipped)` on a fresh clone.
-Everything else runs standalone.
+Around 45 checks covering direction detection, gain arithmetic, sample-rate family and
+ratio handling, DSF/DFF/DST header parsing, command construction and argument order,
+container handling, decoder routing, quoting, and a real conversion executed in each
+direction. The final DSD→PCM check asserts that the decoded peak is *not* 0.0 dBFS —
+that value would mean the raw bitstream was copied rather than decoded.
 
 ---
 
